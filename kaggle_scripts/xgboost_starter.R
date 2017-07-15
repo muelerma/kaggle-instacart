@@ -38,6 +38,7 @@ products <- products %>%
 
 rm(aisles, departments)
 
+## attach user_id to train 
 ordert$user_id <- orders$user_id[match(ordert$order_id, orders$order_id)]
 
 orders_products <- orders %>% 
@@ -119,7 +120,7 @@ data <- orders_products %>%
     up_last_order = max(order_number),
     up_average_cart_position = mean(add_to_cart_order))
 
-rm(orders_products, orders)
+#rm(orders_products, orders)
 
 data <- data %>% 
   inner_join(prd, by = "product_id") %>%
@@ -133,7 +134,7 @@ data <- data %>%
   left_join(ordert %>% select(user_id, product_id, reordered), 
             by = c("user_id", "product_id"))
 
-rm(ordert, prd, users)
+# rm(ordert, prd, users)
 gc()
 
 
@@ -148,7 +149,7 @@ train$reordered[is.na(train$reordered)] <- 0
 
 test <- as.data.frame(data[data$eval_set == "test",])
 test$eval_set <- NULL
-test$user_id <- NULL
+# test$user_id <- NULL
 test$reordered <- NULL
 
 rm(data)
@@ -171,38 +172,96 @@ params <- list(
   "lambda"              = 10
 )
 
-subtrain <- train %>% 
+
+subtrain <- train %>%
   sample_frac(0.1)
 
-X <- xgb.DMatrix(as.matrix(subtrain %>% select(-reordered)), label = subtrain$reordered)
+library(caret)
+set.seed(1234)
+
+eval_index <- createDataPartition(subtrain$reordered, p = 0.25, list = FALSE)
+
+subtrain_train <- subtrain[-eval_index[,1] ,]
+subtrain_eval <- subtrain[eval_index[,1] ,]
+
+X <- xgb.DMatrix(as.matrix(subtrain_train %>% select(-reordered)), label = subtrain_train$reordered)
 
 model <- xgboost(data = X, params = params, nrounds = 90)
 
 importance <- xgb.importance(colnames(X), model = model)
-xgb.ggplot.importance(importance)
+#xgb.ggplot.importance(importance)
 
 rm(X, importance, subtrain)
 gc()
 
 
-# Apply model -------------------------------------------------------------
-X_test <- xgb.DMatrix(as.matrix(test %>% select(-order_id, -product_id)))
+# Score -------------------------------------------------------------------
+
+threshold_reorder <- 0.21
+
+X_eval <- xgb.DMatrix(as.matrix(subtrain_eval %>% select(-reordered)))
+subtrain_eval$predicted <- predict(model, X_eval)
+
+subtrain_eval$predicted <- as.numeric(subtrain_eval$predicted > threshold_reorder)
+
+confusionMatrix(subtrain_eval$predicted, subtrain_eval$reordered)
+
+# rec <- recall(as.factor(subtrain_eval$predicted), as.factor(subtrain_eval$reordered), relevant = "1")
+# prec <- precision(as.factor(subtrain_eval$predicted), as.factor(subtrain_eval$reordered), relevant = "1")
+# 
+# 2*( rec*prec / (prec+rec))
+
+F_meas(as.factor(subtrain_eval$predicted), relevant = "1", reference = as.factor(subtrain_eval$reordered))
+
+## base accuracy on p = 0.25 and set.seed(1234): 0.4366785
+
+
+
+# Apply model on test -----------------------------------------------------
+X_test <- xgb.DMatrix(as.matrix(test %>% select(-order_id, -product_id, -user_id)))
 test$reordered <- predict(model, X_test)
 
-test$reordered <- (test$reordered > 0.21) * 1
+# test$reordered <- as.numeric(test$reordered > threshold_reorder)
 
-submission <- test %>%
-  filter(reordered == 1) %>%
+
+### VARIABLE THRESHOLD
+## get predictions from ReorderCnt.R
+
+test_predicted_cnt
+
+## join via user_id 
+
+## rank reorders by predicted prob
+
+## filter based on reorder count
+
+temp <- test %>% 
+  arrange(user_id, -reordered) %>%
+  group_by(user_id) %>%
+  mutate(rank = row_number()) %>%
+  #select(user_id, reordered, rank) %>%
+  inner_join(test_predicted_cnt, by = "user_id") %>%
+  filter(rank <= reorder_cnt_predict_rnd)
+
+# save(file = "test_data.RData", test)
+
+# Submission --------------------------------------------------------------
+
+submission <- temp %>%
+  #filter(reordered == <1) %>%
   group_by(order_id) %>%
   summarise(
     products = paste(product_id, collapse = " ")
   )
 
 missing <- data.frame(
-  order_id = unique(test$order_id[!test$order_id %in% submission$order_id]),
+  order_id = unique(temp$order_id[!temp$order_id %in% submission$order_id]),
   products = "None"
 )
 
-submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-write.csv(submission, file = "submit.csv", row.names = F)
+submission <- submission %>% 
+  #bind_rows(missing) %>% 
+  arrange(order_id)
+
+write.csv(submission, file = "submit_v2.csv", row.names = F, quote = FALSE)
 
