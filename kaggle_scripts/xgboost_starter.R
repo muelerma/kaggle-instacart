@@ -8,20 +8,12 @@
 #
 ###########################################################################################################
 
-library(data.table)
-library(dplyr)
-library(tidyr)
-
+setwd("C:/Users/martin.m/Documents/dataCompetitions/instacart/")
 
 # Load Data ---------------------------------------------------------------
-path <- "./data"
+source("./scripts/load.R")
 
-aisles <- fread(file.path(path, "aisles.csv"))
-departments <- fread(file.path(path, "departments.csv"))
-orderp <- fread(file.path(path, "order_products__prior.csv"))
-ordert <- fread(file.path(path, "order_products__train.csv"))
-orders <- fread(file.path(path, "orders.csv"))
-products <- fread(file.path(path, "products.csv"))
+## also loads data.table, dplyr and tidyr packages
 
 
 # Reshape data ------------------------------------------------------------
@@ -120,7 +112,7 @@ data <- orders_products %>%
     up_last_order = max(order_number),
     up_average_cart_position = mean(add_to_cart_order))
 
-#rm(orders_products, orders)
+rm(orders_products, orders)
 
 data <- data %>% 
   inner_join(prd, by = "product_id") %>%
@@ -134,9 +126,26 @@ data <- data %>%
   left_join(ordert %>% select(user_id, product_id, reordered), 
             by = c("user_id", "product_id"))
 
-# rm(ordert, prd, users)
+rm(ordert, prd, users)
 gc()
 
+
+# prod2vec ----------------------------------------------------------------
+
+## import prod2vec vectors and include as features
+
+p2v <- readLines("./data/prod2vec_32.vec")
+
+p2v <- as.data.frame(do.call(rbind, strsplit(p2v[2:length(p2v)], split = " ")), stringsAsFactors = FALSE)
+
+colnames(p2v)[1] <- "product_id"
+
+p2v <- p2v %>% filter(product_id != "<EOO>") %>% mutate_if(is.character, as.numeric)
+
+## join with train/test by product_id
+
+data <- data %>% 
+  left_join(p2v, by = "product_id")
 
 # Train / Test datasets ---------------------------------------------------
 
@@ -154,6 +163,8 @@ test$reordered <- NULL
 
 rm(data)
 gc()
+
+
 
 
 # Model -------------------------------------------------------------------
@@ -184,6 +195,7 @@ eval_index <- createDataPartition(subtrain$reordered, p = 0.25, list = FALSE)
 subtrain_train <- subtrain[-eval_index[,1] ,]
 subtrain_eval <- subtrain[eval_index[,1] ,]
 
+## only numeric inouts allowed
 X <- xgb.DMatrix(as.matrix(subtrain_train %>% select(-reordered)), label = subtrain_train$reordered)
 
 model <- xgboost(data = X, params = params, nrounds = 90)
@@ -224,24 +236,24 @@ test$reordered <- predict(model, X_test)
 # test$reordered <- as.numeric(test$reordered > threshold_reorder)
 
 
-### VARIABLE THRESHOLD
-## get predictions from ReorderCnt.R
-
-test_predicted_cnt
-
-## join via user_id 
-
-## rank reorders by predicted prob
-
-## filter based on reorder count
-
-temp <- test %>% 
-  arrange(user_id, -reordered) %>%
-  group_by(user_id) %>%
-  mutate(rank = row_number()) %>%
-  #select(user_id, reordered, rank) %>%
-  inner_join(test_predicted_cnt, by = "user_id") %>%
-  filter(rank <= reorder_cnt_predict_rnd)
+# ### VARIABLE THRESHOLD
+# ## get predictions from ReorderCnt.R
+# 
+# test_predicted_cnt
+# 
+# ## join via user_id 
+# 
+# ## rank reorders by predicted prob
+# 
+# ## filter based on reorder count
+# 
+# temp <- test %>% 
+#   arrange(user_id, -reordered) %>%
+#   group_by(user_id) %>%
+#   mutate(rank = row_number()) %>%
+#   #select(user_id, reordered, rank) %>%
+#   inner_join(test_predicted_cnt, by = "user_id") %>%
+#   filter(rank <= reorder_cnt_predict_rnd)
 
 # save(file = "test_data.RData", test)
 
